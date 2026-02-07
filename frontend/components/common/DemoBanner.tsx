@@ -15,7 +15,7 @@ export default function DemoBanner() {
           Accounts and recipes are automatically deleted after 14-30 days.
           Max 10 recipes per user.
           <a
-            href="https://github.com/yourusername/recipe-card-builder"
+            href="https://github.com/jeromeadmana/recipe-card-builder"
             target="_blank"
             rel="noopener noreferrer"
             className="underline ml-2 hover:text-gray-800"
