@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import DemoBanner from "@/components/common/DemoBanner";
 
 export const metadata: Metadata = {
   title: "Recipe Card Builder",
@@ -14,6 +15,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
+        <DemoBanner />
         {children}
       </body>
     </html>

@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { api, removeToken } from '@/lib/api';
 import { User, Recipe } from '@/lib/types';
 import RoleSwitcher from '@/components/auth/RoleSwitcher';
+import RecipeStats from '@/components/dashboard/RecipeStats';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -168,7 +169,8 @@ export default function DashboardPage() {
             )}
           </div>
 
-          <div>
+          <div className="space-y-6">
+            {canCreateRecipe && <RecipeStats />}
             <RoleSwitcher currentRole={user.role} onRoleChange={(role) => setUser({ ...user, role })} />
           </div>
         </div>

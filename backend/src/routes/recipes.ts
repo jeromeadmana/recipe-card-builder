@@ -1,27 +1,49 @@
 import { Router, Response } from 'express';
 import { pool } from '../db/pool';
 import { authenticate, AuthRequest } from '../middleware/auth';
+import { checkRecipeQuota, validateCanvasSize } from '../middleware/quota';
 
 const router = Router();
 
 router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
   try {
+    // Pagination
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+    const offset = parseInt(req.query.offset as string) || 0;
+
     let query = '';
+    let countQuery = '';
     let params: any[] = [];
 
     if (req.user!.role === 'chef') {
-      query = 'SELECT * FROM rcb_recipes ORDER BY created_at DESC';
+      query = 'SELECT * FROM rcb_recipes ORDER BY created_at DESC LIMIT $1 OFFSET $2';
+      countQuery = 'SELECT COUNT(*) FROM rcb_recipes';
+      params = [limit, offset];
     } else if (req.user!.role === 'home_cook') {
       query = `SELECT * FROM rcb_recipes
                WHERE is_public = true OR user_id = $1
-               ORDER BY created_at DESC`;
-      params = [req.user!.id];
+               ORDER BY created_at DESC LIMIT $2 OFFSET $3`;
+      countQuery = `SELECT COUNT(*) FROM rcb_recipes WHERE is_public = true OR user_id = $1`;
+      params = [req.user!.id, limit, offset];
     } else {
-      query = 'SELECT * FROM rcb_recipes WHERE is_public = true ORDER BY created_at DESC';
+      query = 'SELECT * FROM rcb_recipes WHERE is_public = true ORDER BY created_at DESC LIMIT $1 OFFSET $2';
+      countQuery = 'SELECT COUNT(*) FROM rcb_recipes WHERE is_public = true';
+      params = [limit, offset];
     }
 
     const result = await pool.query(query, params);
-    res.json({ recipes: result.rows });
+    const countResult = await pool.query(countQuery, req.user!.role === 'home_cook' ? [req.user!.id] : []);
+    const total = parseInt(countResult.rows[0].count);
+
+    res.json({
+      recipes: result.rows,
+      pagination: {
+        total,
+        limit,
+        offset,
+        hasMore: offset + limit < total
+      }
+    });
   } catch (error) {
     console.error('Get recipes error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -55,7 +77,7 @@ router.get('/:id', authenticate, async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.post('/', authenticate, async (req: AuthRequest, res: Response) => {
+router.post('/', authenticate, checkRecipeQuota, validateCanvasSize, async (req: AuthRequest, res: Response) => {
   const { title, description, is_public = false, canvas_data } = req.body;
 
   if (req.user!.role === 'guest') {
@@ -64,6 +86,16 @@ router.post('/', authenticate, async (req: AuthRequest, res: Response) => {
 
   if (!title || !canvas_data) {
     return res.status(400).json({ error: 'Title and canvas_data are required' });
+  }
+
+  // Validate title length
+  if (title.length > 255) {
+    return res.status(400).json({ error: 'Title must be 255 characters or less' });
+  }
+
+  // Validate description length
+  if (description && description.length > 5000) {
+    return res.status(400).json({ error: 'Description must be 5000 characters or less' });
   }
 
   try {
@@ -81,12 +113,22 @@ router.post('/', authenticate, async (req: AuthRequest, res: Response) => {
   }
 });
 
-router.put('/:id', authenticate, async (req: AuthRequest, res: Response) => {
+router.put('/:id', authenticate, validateCanvasSize, async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const { title, description, is_public, canvas_data } = req.body;
 
   if (req.user!.role === 'guest') {
     return res.status(403).json({ error: 'Guests cannot edit recipes' });
+  }
+
+  // Validate title length
+  if (title && title.length > 255) {
+    return res.status(400).json({ error: 'Title must be 255 characters or less' });
+  }
+
+  // Validate description length
+  if (description && description.length > 5000) {
+    return res.status(400).json({ error: 'Description must be 5000 characters or less' });
   }
 
   try {
@@ -167,6 +209,70 @@ router.delete('/:id', authenticate, async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error('Delete recipe error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get user's recipe statistics
+router.get('/stats/me', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const maxRecipes = parseInt(process.env.MAX_RECIPES_PER_USER || '10');
+
+    const result = await pool.query(
+      'SELECT COUNT(*) as count FROM rcb_recipes WHERE user_id = $1',
+      [userId]
+    );
+
+    const count = parseInt(result.rows[0].count);
+
+    res.json({
+      recipeCount: count,
+      recipeLimit: maxRecipes,
+      remainingSlots: Math.max(0, maxRecipes - count),
+      limitReached: count >= maxRecipes
+    });
+  } catch (error) {
+    console.error('Get stats error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Reset all user's recipes (manual reset for demo users)
+router.delete('/reset/all', authenticate, async (req: AuthRequest, res: Response) => {
+  if (req.user!.role === 'guest') {
+    return res.status(403).json({ error: 'Guests cannot reset data' });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    const userId = req.user!.id;
+
+    await client.query('BEGIN');
+
+    // Get count before deletion
+    const countResult = await client.query(
+      'SELECT COUNT(*) as count FROM rcb_recipes WHERE user_id = $1',
+      [userId]
+    );
+    const deletedCount = parseInt(countResult.rows[0].count);
+
+    // Delete all user's recipes
+    await client.query('DELETE FROM rcb_recipes WHERE user_id = $1', [userId]);
+
+    await client.query('COMMIT');
+
+    res.json({
+      message: 'All your recipes have been successfully deleted',
+      deletedCount,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Reset recipes error:', error);
+    res.status(500).json({ error: 'Failed to reset recipes. Please try again.' });
+  } finally {
+    client.release();
   }
 });
 

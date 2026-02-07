@@ -3,15 +3,33 @@ import bcrypt from 'bcryptjs';
 import { pool } from '../db/pool';
 import { generateToken } from '../utils/jwt';
 import { authenticate, AuthRequest } from '../middleware/auth';
+import { checkTotalUsers } from '../middleware/quota';
 import { UserRole } from '../types';
 
 const router = Router();
 
-router.post('/register', async (req: Request, res: Response) => {
+router.post('/register', checkTotalUsers, async (req: Request, res: Response) => {
   const { username, email, password, role = 'home_cook' } = req.body;
 
   if (!username || !email || !password) {
     return res.status(400).json({ error: 'Username, email, and password are required' });
+  }
+
+  // Validate input lengths
+  if (username.length < 3 || username.length > 50) {
+    return res.status(400).json({ error: 'Username must be between 3 and 50 characters' });
+  }
+
+  if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+    return res.status(400).json({ error: 'Username can only contain letters, numbers, and underscores' });
+  }
+
+  if (email.length > 255) {
+    return res.status(400).json({ error: 'Email must be 255 characters or less' });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
   }
 
   const validRoles: UserRole[] = ['guest', 'home_cook', 'chef'];
